@@ -58,6 +58,25 @@ final class HFE_To_Songlist_Plugin
         <div class="hfe-songlist-wrap">
             <?php echo $this->render_inline_styles(); ?>
 
+            <form method="post" enctype="multipart/form-data" class="hfe-songlist-form">
+                <?php wp_nonce_field('hfe_songlist_upload', 'hfe_songlist_nonce'); ?>
+                <input type="hidden" name="hfe_songlist_action" value="upload">
+
+                <label for="hfe-songlist-file"><strong><?php esc_html_e('Upload HFE File', 'hfe-to-songlist'); ?></strong></label>
+                <input
+                    id="hfe-songlist-file"
+                    type="file"
+                    name="hfe_songlist_file"
+                    accept=".hfe,.HFE"
+                    required
+                >
+                <p class="description"><?php esc_html_e('Only 720 KB and 1440 KB floppy disk HFE images are supported.', 'hfe-to-songlist'); ?></p>
+
+                <button type="submit" class="button button-primary">
+                    <?php esc_html_e('Generate Songlist', 'hfe-to-songlist'); ?>
+                </button>
+            </form>
+
             <?php if (is_array($result) && !empty($result['success'])) : ?>
                 <?php
                 /** @var array<int, array{filename:string,title:string}> $songs */
@@ -90,7 +109,7 @@ final class HFE_To_Songlist_Plugin
                         <tbody>
                         <?php foreach ($songs as $index => $song) : ?>
                             <tr>
-                                <td><?php echo esc_html(sprintf('%02d', (int) $index)); ?></td>
+                                <td><?php echo esc_html(sprintf('%02d', (int) $index + 1)); ?></td>
                                 <td><?php echo esc_html($song['title']); ?></td>
                                 <td><code><?php echo esc_html($song['filename']); ?></code></td>
                             </tr>
@@ -103,25 +122,6 @@ final class HFE_To_Songlist_Plugin
                     <?php echo esc_html((string) ($result['error'] ?? __('Unable to process file.', 'hfe-to-songlist'))); ?>
                 </div>
             <?php endif; ?>
-
-            <form method="post" enctype="multipart/form-data" class="hfe-songlist-form">
-                <?php wp_nonce_field('hfe_songlist_upload', 'hfe_songlist_nonce'); ?>
-                <input type="hidden" name="hfe_songlist_action" value="upload">
-
-                <label for="hfe-songlist-file"><strong><?php esc_html_e('Upload HFE File', 'hfe-to-songlist'); ?></strong></label>
-                <input
-                    id="hfe-songlist-file"
-                    type="file"
-                    name="hfe_songlist_file"
-                    accept=".hfe,.HFE"
-                    required
-                >
-                <p class="description"><?php esc_html_e('Only 720 KB and 1440 KB floppy disk HFE images are supported.', 'hfe-to-songlist'); ?></p>
-
-                <button type="submit" class="button button-primary">
-                    <?php esc_html_e('Generate Songlist', 'hfe-to-songlist'); ?>
-                </button>
-            </form>
         </div>
         <?php
 
@@ -218,6 +218,10 @@ final class HFE_To_Songlist_Plugin
 
         $convert_result = $this->convert_hfe_to_img($hfe_path, $work_dir, $header['preferred_format']);
         if (!$convert_result['success']) {
+            if (!empty($convert_result['debug'])) {
+                error_log('[HFE Songlist] Convert failed: ' . (string) $convert_result['debug']);
+            }
+
             return $this->error_result(
                 __('Could not convert this HFE into a valid 720/1440 KB FAT image.', 'hfe-to-songlist')
             );
@@ -293,7 +297,7 @@ final class HFE_To_Songlist_Plugin
     }
 
     /**
-     * @return array{success:bool,img_path?:string,disk_kb?:int}
+     * @return array{success:bool,img_path?:string,disk_kb?:int,debug?:string}
      */
     private function convert_hfe_to_img(string $hfe_path, string $work_dir, string $preferred_format): array
     {
@@ -305,6 +309,7 @@ final class HFE_To_Songlist_Plugin
         }
 
         $gw_binary = $this->gw_binary();
+        $attempts = [];
 
         foreach ($formats as $format) {
             $img_path = $work_dir . DIRECTORY_SEPARATOR . str_replace('.', '-', $format) . '.img';
@@ -318,16 +323,36 @@ final class HFE_To_Songlist_Plugin
             ]);
 
             if ($convert_result['exit_code'] !== 0 || !is_file($img_path)) {
+                $attempts[] = sprintf(
+                    '%s: gw exit=%d img=%s out=%s',
+                    $format,
+                    (int) $convert_result['exit_code'],
+                    is_file($img_path) ? 'yes' : 'no',
+                    $this->clip_debug_output($convert_result['output'])
+                );
                 continue;
             }
 
             $expected_size = $this->expected_img_size_for_format($format);
             if ($expected_size <= 0 || filesize($img_path) !== $expected_size) {
+                $actual_size = is_file($img_path) ? (int) filesize($img_path) : 0;
+                $attempts[] = sprintf(
+                    '%s: wrong size expected=%d actual=%d',
+                    $format,
+                    $expected_size,
+                    $actual_size
+                );
                 continue;
             }
 
             $list_result = $this->run_command([$this->seven_z_binary(), 'l', $img_path]);
             if (!$this->is_valid_fat_listing($list_result)) {
+                $attempts[] = sprintf(
+                    '%s: 7z listing not FAT exit=%d out=%s',
+                    $format,
+                    (int) $list_result['exit_code'],
+                    $this->clip_debug_output($list_result['output'])
+                );
                 continue;
             }
 
@@ -338,7 +363,24 @@ final class HFE_To_Songlist_Plugin
             ];
         }
 
-        return ['success' => false];
+        return [
+            'success' => false,
+            'debug' => implode(' || ', $attempts),
+        ];
+    }
+
+    private function clip_debug_output(string $output): string
+    {
+        $output = preg_replace('/\s+/', ' ', trim($output)) ?? '';
+        if ($output === '') {
+            return '(empty)';
+        }
+
+        if (strlen($output) > 280) {
+            return substr($output, 0, 280) . '...';
+        }
+
+        return $output;
     }
 
     /**
@@ -636,7 +678,7 @@ final class HFE_To_Songlist_Plugin
     {
         $lines = [$album_name];
         foreach ($songs as $index => $song) {
-            $lines[] = sprintf('  %02d. %s', (int) $index, $song['title']);
+            $lines[] = sprintf('  %02d. %s', (int) $index + 1, $song['title']);
         }
 
         return implode("\n", $lines);
@@ -796,7 +838,7 @@ final class HFE_To_Songlist_Plugin
     {
         return '<style>
 .hfe-songlist-wrap{max-width:980px}
-.hfe-songlist-form{display:grid;gap:10px;margin-top:12px}
+.hfe-songlist-form{display:grid;gap:10px;margin:0 0 12px 0}
 .hfe-songlist-message{padding:10px 12px;border-radius:4px;margin:8px 0}
 .hfe-songlist-success{background:#edf9ed;border:1px solid #93c593}
 .hfe-songlist-error{background:#fff2f2;border:1px solid #e19a9a}

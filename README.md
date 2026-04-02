@@ -8,8 +8,8 @@ Output format:
 
 ```text
 ALBUM NAME
-  00. Song 1 Name
-  01. Song 2 Name
+  01. Song 1 Name
+  02. Song 2 Name
 ```
 
 The plugin also shows a table with `#`, parsed song title, and source filename.
