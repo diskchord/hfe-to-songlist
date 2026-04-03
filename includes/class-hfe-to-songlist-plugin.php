@@ -27,6 +27,8 @@ final class HFE_To_Songlist_Plugin
     private function __construct()
     {
         add_shortcode(self::SHORTCODE, [$this, 'render_shortcode']);
+        add_action('wp_ajax_hfe_songlist_generate', [$this, 'ajax_generate_songlist']);
+        add_action('wp_ajax_nopriv_hfe_songlist_generate', [$this, 'ajax_generate_songlist']);
     }
 
     /**
@@ -35,6 +37,8 @@ final class HFE_To_Songlist_Plugin
     public function render_shortcode(array $atts = []): string
     {
         unset($atts);
+
+        $this->enqueue_assets();
 
         $result = null;
         if (
@@ -53,52 +57,78 @@ final class HFE_To_Songlist_Plugin
             }
         }
 
+        /** @var array<int, array{filename:string,title:string}> $songs */
+        $songs = [];
+        $songlist_text = '';
+        $album_name = __('Unknown Album', 'hfe-to-songlist');
+        $disk_kb = 0;
+        $message_text = '';
+        $message_class = '';
+
+        if (is_array($result) && !empty($result['success'])) {
+            $songs = is_array($result['songs'] ?? null) ? $result['songs'] : [];
+            $songlist_text = is_string($result['songlist_text'] ?? null) ? $result['songlist_text'] : '';
+            $album_name = is_string($result['album_name'] ?? null) ? $result['album_name'] : $album_name;
+            $disk_kb = is_int($result['disk_kb'] ?? null) ? $result['disk_kb'] : 0;
+            $message_text = __('Songlist generated successfully.', 'hfe-to-songlist');
+            $message_class = 'hfe-songlist-success';
+        } elseif (is_array($result) && empty($result['success'])) {
+            $message_text = (string) ($result['error'] ?? __('Unable to process file.', 'hfe-to-songlist'));
+            $message_class = 'hfe-songlist-error';
+        }
+
+        $input_id = wp_unique_id('hfe-songlist-file-');
+        $show_result = $songs !== [];
+
         ob_start();
         ?>
-        <div class="hfe-songlist-wrap">
-            <?php echo $this->render_inline_styles(); ?>
-
-            <form method="post" enctype="multipart/form-data" class="hfe-songlist-form">
-                <?php wp_nonce_field('hfe_songlist_upload', 'hfe_songlist_nonce'); ?>
-                <input type="hidden" name="hfe_songlist_action" value="upload">
-
-                <label for="hfe-songlist-file"><strong><?php esc_html_e('Upload HFE File', 'hfe-to-songlist'); ?></strong></label>
-                <input
-                    id="hfe-songlist-file"
-                    type="file"
-                    name="hfe_songlist_file"
-                    accept=".hfe,.HFE"
-                    required
-                >
-                <p class="description"><?php esc_html_e('Only 720 KB and 1440 KB floppy disk HFE images are supported.', 'hfe-to-songlist'); ?></p>
-
-                <button type="submit" class="button button-primary">
-                    <?php esc_html_e('Generate Songlist', 'hfe-to-songlist'); ?>
-                </button>
-            </form>
-
-            <?php if (is_array($result) && !empty($result['success'])) : ?>
-                <?php
-                /** @var array<int, array{filename:string,title:string}> $songs */
-                $songs = is_array($result['songs'] ?? null) ? $result['songs'] : [];
-                $songlist_text = is_string($result['songlist_text'] ?? null) ? $result['songlist_text'] : '';
-                $album_name = is_string($result['album_name'] ?? null) ? $result['album_name'] : __('Unknown Album', 'hfe-to-songlist');
-                $disk_kb = is_int($result['disk_kb'] ?? null) ? $result['disk_kb'] : 0;
-                ?>
-                <div class="hfe-songlist-message hfe-songlist-success">
-                    <?php esc_html_e('Songlist generated successfully.', 'hfe-to-songlist'); ?>
+        <div class="hfe-songlist-wrap" data-hfe-songlist="1">
+            <div class="hfe-songlist-shell">
+                <div class="hfe-songlist-header">
+                    <h3><?php esc_html_e('HFE to Songlist', 'hfe-to-songlist'); ?></h3>
+                    <p><?php esc_html_e('Upload a Yamaha HFE disk image and generate a copy-ready album songlist.', 'hfe-to-songlist'); ?></p>
                 </div>
 
-                <div class="hfe-songlist-result">
-                    <p><strong><?php esc_html_e('Album:', 'hfe-to-songlist'); ?></strong> <?php echo esc_html($album_name); ?></p>
-                    <?php if ($disk_kb > 0) : ?>
-                        <p><strong><?php esc_html_e('Disk Type:', 'hfe-to-songlist'); ?></strong> <?php echo esc_html((string) $disk_kb); ?> KB</p>
-                    <?php endif; ?>
+                <form method="post" enctype="multipart/form-data" class="hfe-songlist-form">
+                    <?php wp_nonce_field('hfe_songlist_upload', 'hfe_songlist_nonce'); ?>
+                    <input type="hidden" name="hfe_songlist_action" value="upload">
 
-                    <label for="hfe-songlist-text"><strong><?php esc_html_e('Copy-Friendly Output', 'hfe-to-songlist'); ?></strong></label>
-                    <textarea id="hfe-songlist-text" class="hfe-songlist-textarea" readonly rows="12"><?php echo esc_textarea($songlist_text); ?></textarea>
+                    <label for="<?php echo esc_attr($input_id); ?>" class="hfe-songlist-label"><?php esc_html_e('HFE File', 'hfe-to-songlist'); ?></label>
+                    <input
+                        id="<?php echo esc_attr($input_id); ?>"
+                        type="file"
+                        class="hfe-songlist-file-input"
+                        name="hfe_songlist_file"
+                        accept=".hfe,.HFE"
+                        required
+                    >
+                    <p class="hfe-songlist-help"><?php esc_html_e('Supports 720 KB and 1440 KB FAT floppy disk images.', 'hfe-to-songlist'); ?></p>
 
-                    <table class="hfe-songlist-table">
+                    <div class="hfe-songlist-actions">
+                        <button type="submit" class="button button-primary hfe-songlist-submit">
+                            <?php esc_html_e('Generate Songlist', 'hfe-to-songlist'); ?>
+                        </button>
+                        <span class="hfe-songlist-status" aria-live="polite"></span>
+                    </div>
+                </form>
+
+                <div class="hfe-songlist-message <?php echo esc_attr($message_class); ?><?php echo $message_text === '' ? ' hfe-songlist-hidden' : ''; ?>">
+                    <?php echo esc_html($message_text); ?>
+                </div>
+
+                <div class="hfe-songlist-result<?php echo $show_result ? '' : ' hfe-songlist-hidden'; ?>">
+                    <div class="hfe-songlist-meta">
+                        <p><strong><?php esc_html_e('Album:', 'hfe-to-songlist'); ?></strong> <span data-hfe-field="album"><?php echo esc_html($album_name); ?></span></p>
+                        <p class="hfe-songlist-disk<?php echo $disk_kb > 0 ? '' : ' hfe-songlist-hidden'; ?>">
+                            <strong><?php esc_html_e('Disk Type:', 'hfe-to-songlist'); ?></strong>
+                            <span data-hfe-field="disk"><?php echo esc_html($disk_kb > 0 ? ((string) $disk_kb . ' KB') : ''); ?></span>
+                        </p>
+                    </div>
+
+                    <label for="<?php echo esc_attr($input_id . '-text'); ?>" class="hfe-songlist-label"><?php esc_html_e('Copy-Friendly Output', 'hfe-to-songlist'); ?></label>
+                    <textarea id="<?php echo esc_attr($input_id . '-text'); ?>" class="hfe-songlist-textarea" readonly rows="12"><?php echo esc_textarea($songlist_text); ?></textarea>
+
+                    <table class="hfe-songlist-table" aria-live="polite">
                         <thead>
                         <tr>
                             <th><?php esc_html_e('#', 'hfe-to-songlist'); ?></th>
@@ -106,26 +136,108 @@ final class HFE_To_Songlist_Plugin
                             <th><?php esc_html_e('Source File', 'hfe-to-songlist'); ?></th>
                         </tr>
                         </thead>
-                        <tbody>
-                        <?php foreach ($songs as $index => $song) : ?>
-                            <tr>
-                                <td><?php echo esc_html(sprintf('%02d', (int) $index + 1)); ?></td>
-                                <td><?php echo esc_html($song['title']); ?></td>
-                                <td><code><?php echo esc_html($song['filename']); ?></code></td>
-                            </tr>
-                        <?php endforeach; ?>
+                        <tbody class="hfe-songlist-table-body">
+                        <?php if ($show_result) : ?>
+                            <?php foreach ($songs as $index => $song) : ?>
+                                <tr>
+                                    <td><?php echo esc_html(sprintf('%02d', (int) $index + 1)); ?></td>
+                                    <td><?php echo esc_html($song['title']); ?></td>
+                                    <td><code><?php echo esc_html($song['filename']); ?></code></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
-            <?php elseif (is_array($result) && empty($result['success'])) : ?>
-                <div class="hfe-songlist-message hfe-songlist-error">
-                    <?php echo esc_html((string) ($result['error'] ?? __('Unable to process file.', 'hfe-to-songlist'))); ?>
-                </div>
-            <?php endif; ?>
+            </div>
         </div>
         <?php
 
         return (string) ob_get_clean();
+    }
+
+    public function ajax_generate_songlist(): void
+    {
+        $nonce = isset($_POST['nonce']) ? (string) wp_unslash($_POST['nonce']) : '';
+        if (!wp_verify_nonce($nonce, 'hfe_songlist_upload')) {
+            wp_send_json_error(
+                ['error' => __('Security check failed. Please refresh and try again.', 'hfe-to-songlist')],
+                403
+            );
+        }
+
+        $result = $this->handle_upload_request();
+        if (!empty($result['success'])) {
+            wp_send_json_success($this->success_payload($result));
+        }
+
+        wp_send_json_error(
+            ['error' => (string) ($result['error'] ?? __('Unable to process file.', 'hfe-to-songlist'))],
+            400
+        );
+    }
+
+    private function enqueue_assets(): void
+    {
+        wp_enqueue_style(
+            'hfe-songlist',
+            plugins_url('assets/css/hfe-songlist.css', HFE_TO_SONGLIST_PLUGIN_FILE),
+            [],
+            HFE_TO_SONGLIST_PLUGIN_VERSION
+        );
+
+        wp_enqueue_script(
+            'hfe-songlist',
+            plugins_url('assets/js/hfe-songlist.js', HFE_TO_SONGLIST_PLUGIN_FILE),
+            [],
+            HFE_TO_SONGLIST_PLUGIN_VERSION,
+            true
+        );
+
+        wp_localize_script(
+            'hfe-songlist',
+            'hfeSonglistConfig',
+            [
+                'ajaxUrl' => admin_url('admin-ajax.php'),
+                'action' => 'hfe_songlist_generate',
+                'nonce' => wp_create_nonce('hfe_songlist_upload'),
+                'i18n' => [
+                    'processing' => __('Processing disk image. This can take a moment.', 'hfe-to-songlist'),
+                    'noFile' => __('Choose an HFE file first.', 'hfe-to-songlist'),
+                    'success' => __('Songlist generated successfully.', 'hfe-to-songlist'),
+                    'networkError' => __('Network error while uploading or processing.', 'hfe-to-songlist'),
+                    'genericError' => __('Unable to process file.', 'hfe-to-songlist'),
+                ],
+            ]
+        );
+    }
+
+    /**
+     * @param array{success:bool,error?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string} $result
+     * @return array{album_name:string,disk_kb:int,songlist_text:string,songs:array<int,array{filename:string,title:string}>}
+     */
+    private function success_payload(array $result): array
+    {
+        $songs = [];
+        if (is_array($result['songs'] ?? null)) {
+            foreach ($result['songs'] as $song) {
+                if (!is_array($song)) {
+                    continue;
+                }
+
+                $songs[] = [
+                    'filename' => (string) ($song['filename'] ?? ''),
+                    'title' => (string) ($song['title'] ?? ''),
+                ];
+            }
+        }
+
+        return [
+            'album_name' => (string) ($result['album_name'] ?? __('Unknown Album', 'hfe-to-songlist')),
+            'disk_kb' => (int) ($result['disk_kb'] ?? 0),
+            'songlist_text' => (string) ($result['songlist_text'] ?? ''),
+            'songs' => $songs,
+        ];
     }
 
     /**
@@ -834,18 +946,4 @@ final class HFE_To_Songlist_Plugin
         ];
     }
 
-    private function render_inline_styles(): string
-    {
-        return '<style>
-.hfe-songlist-wrap{max-width:980px}
-.hfe-songlist-form{display:grid;gap:10px;margin:0 0 12px 0}
-.hfe-songlist-message{padding:10px 12px;border-radius:4px;margin:8px 0}
-.hfe-songlist-success{background:#edf9ed;border:1px solid #93c593}
-.hfe-songlist-error{background:#fff2f2;border:1px solid #e19a9a}
-.hfe-songlist-textarea{width:100%;font-family:Consolas,Monaco,monospace;white-space:pre;min-height:220px}
-.hfe-songlist-table{width:100%;border-collapse:collapse;margin-top:14px}
-.hfe-songlist-table th,.hfe-songlist-table td{border:1px solid #dcdcdc;padding:7px 9px;text-align:left}
-.hfe-songlist-table th{background:#f7f7f7}
-</style>';
-    }
 }

@@ -1,6 +1,7 @@
 # HFE to Songlist (WordPress Plugin)
 
 This plugin adds a shortcode that lets users upload an `.hfe` disk image and generate a song list from MIDI and Yamaha E-SEQ/FIL files.
+Uploads are processed asynchronously (AJAX), so the page does not reload between albums.
 
 ## What It Produces
 
