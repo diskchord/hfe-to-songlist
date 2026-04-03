@@ -63,6 +63,7 @@
     var textArea = wrap.querySelector(".hfe-songlist-textarea");
     var tableBody = wrap.querySelector(".hfe-songlist-table-body");
     var nonceInput = wrap.querySelector('input[name="hfe_songlist_nonce"]');
+    var aiCleanupInput = wrap.querySelector(".hfe-songlist-ai-cleanup");
 
     if (!form || !fileInput || !submitButton || !status || !message || !result || !album || !diskLine || !disk || !textArea || !tableBody) {
       return;
@@ -85,10 +86,15 @@
       formData.set("action", action);
       formData.set("nonce", (nonceInput && nonceInput.value) || globalNonce);
       formData.set("hfe_songlist_file", file);
+      if (aiCleanupInput && aiCleanupInput.checked) {
+        formData.set("hfe_songlist_ai_cleanup", "1");
+      }
 
       submitButton.disabled = true;
       submitButton.classList.add("hfe-songlist-loading");
-      status.textContent = t("processing", "Processing disk image. This can take a moment.");
+      status.textContent = aiCleanupInput && aiCleanupInput.checked
+        ? t("processingAi", "Processing disk image and running AI cleanup. This can take a bit longer.")
+        : t("processing", "Processing disk image. This can take a moment.");
       hideMessage(message);
 
       fetch(ajaxUrl, {
@@ -136,7 +142,8 @@
           renderSongs(tableBody, songs);
 
           result.classList.remove("hfe-songlist-hidden");
-          showMessage(message, "success", t("success", "Songlist generated successfully."));
+          var notice = typeof data.notice === "string" && data.notice !== "" ? " " + data.notice : "";
+          showMessage(message, "success", t("success", "Songlist generated successfully.") + notice);
         })
         .catch(function () {
           showMessage(message, "error", t("networkError", "Network error while uploading or processing."));

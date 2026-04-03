@@ -21,6 +21,7 @@ The plugin also shows a table with `#`, parsed song title, and source filename.
 - PHP 8.0+
 - `gw` (Greaseweazle CLI) available on the server `PATH`
 - `7z` (7-Zip CLI) available on the server `PATH`
+- Optional for AI cleanup: OpenAI API key
 
 ## Installation
 
@@ -52,6 +53,13 @@ Temporary files are created under WordPress uploads (`hfe-songlist-temp`) and re
 - E-SEQ/FIL titles: reads title bytes at offset `0x57` length `0x20`, normalizes ASCII spaces.
 - `PIANODIR.FIL` is skipped as a control/directory file.
 
+## AI Cleanup (Optional)
+
+- The upload form includes an **AI Cleanup** checkbox.
+- When checked, the plugin sends extracted titles to OpenAI and attempts to clean them up.
+- Default model is `gpt-5.4-nano`.
+- If cleanup fails or key is missing, the plugin still returns the original parsed titles.
+
 ## Optional Binary Overrides
 
 If needed, define constants in `wp-config.php`:
@@ -59,9 +67,15 @@ If needed, define constants in `wp-config.php`:
 ```php
 define('HFE_SONGLIST_GW_BINARY', '/path/to/gw');
 define('HFE_SONGLIST_7Z_BINARY', '/path/to/7z');
+define('HFE_SONGLIST_OPENAI_API_KEY', 'sk-...');
+define('HFE_SONGLIST_OPENAI_MODEL', 'gpt-5.4-nano'); // default
+define('HFE_SONGLIST_OPENAI_API_URL', 'https://api.openai.com/v1/responses'); // default
 ```
 
 Or use filters:
 
 - `hfe_songlist_gw_binary`
 - `hfe_songlist_7z_binary`
+- `hfe_songlist_openai_api_key`
+- `hfe_songlist_openai_model`
+- `hfe_songlist_openai_api_url`

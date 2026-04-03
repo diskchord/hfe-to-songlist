@@ -64,6 +64,7 @@ final class HFE_To_Songlist_Plugin
         $disk_kb = 0;
         $message_text = '';
         $message_class = '';
+        $ai_cleanup_checked = $this->is_ai_cleanup_requested();
 
         if (is_array($result) && !empty($result['success'])) {
             $songs = is_array($result['songs'] ?? null) ? $result['songs'] : [];
@@ -71,6 +72,9 @@ final class HFE_To_Songlist_Plugin
             $album_name = is_string($result['album_name'] ?? null) ? $result['album_name'] : $album_name;
             $disk_kb = is_int($result['disk_kb'] ?? null) ? $result['disk_kb'] : 0;
             $message_text = __('Songlist generated successfully.', 'hfe-to-songlist');
+            if (!empty($result['notice']) && is_string($result['notice'])) {
+                $message_text .= ' ' . $result['notice'];
+            }
             $message_class = 'hfe-songlist-success';
         } elseif (is_array($result) && empty($result['success'])) {
             $message_text = (string) ($result['error'] ?? __('Unable to process file.', 'hfe-to-songlist'));
@@ -103,6 +107,20 @@ final class HFE_To_Songlist_Plugin
                         required
                     >
                     <p class="hfe-songlist-help"><?php esc_html_e('Supports 720 KB and 1440 KB FAT floppy disk images.', 'hfe-to-songlist'); ?></p>
+
+                    <label class="hfe-songlist-option">
+                        <input
+                            type="checkbox"
+                            name="hfe_songlist_ai_cleanup"
+                            class="hfe-songlist-ai-cleanup"
+                            value="1"
+                            <?php checked($ai_cleanup_checked); ?>
+                        >
+                        <span>
+                            <strong><?php esc_html_e('AI Cleanup', 'hfe-to-songlist'); ?></strong>
+                            <?php esc_html_e('Attempt title cleanup using OpenAI (model: gpt-5.4-nano).', 'hfe-to-songlist'); ?>
+                        </span>
+                    </label>
 
                     <div class="hfe-songlist-actions">
                         <button type="submit" class="button button-primary hfe-songlist-submit">
@@ -203,6 +221,7 @@ final class HFE_To_Songlist_Plugin
                 'nonce' => wp_create_nonce('hfe_songlist_upload'),
                 'i18n' => [
                     'processing' => __('Processing disk image. This can take a moment.', 'hfe-to-songlist'),
+                    'processingAi' => __('Processing disk image and running AI cleanup. This can take a bit longer.', 'hfe-to-songlist'),
                     'noFile' => __('Choose an HFE file first.', 'hfe-to-songlist'),
                     'success' => __('Songlist generated successfully.', 'hfe-to-songlist'),
                     'networkError' => __('Network error while uploading or processing.', 'hfe-to-songlist'),
@@ -213,8 +232,8 @@ final class HFE_To_Songlist_Plugin
     }
 
     /**
-     * @param array{success:bool,error?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string} $result
-     * @return array{album_name:string,disk_kb:int,songlist_text:string,songs:array<int,array{filename:string,title:string}>}
+     * @param array{success:bool,error?:string,notice?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string} $result
+     * @return array{album_name:string,disk_kb:int,songlist_text:string,notice:string,songs:array<int,array{filename:string,title:string}>}
      */
     private function success_payload(array $result): array
     {
@@ -236,12 +255,13 @@ final class HFE_To_Songlist_Plugin
             'album_name' => (string) ($result['album_name'] ?? __('Unknown Album', 'hfe-to-songlist')),
             'disk_kb' => (int) ($result['disk_kb'] ?? 0),
             'songlist_text' => (string) ($result['songlist_text'] ?? ''),
+            'notice' => (string) ($result['notice'] ?? ''),
             'songs' => $songs,
         ];
     }
 
     /**
-     * @return array{success:bool,error?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string}
+     * @return array{success:bool,error?:string,notice?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string}
      */
     private function handle_upload_request(): array
     {
@@ -290,17 +310,19 @@ final class HFE_To_Songlist_Plugin
             return $this->error_result(__('Unable to move the uploaded file.', 'hfe-to-songlist'));
         }
 
+        $use_ai_cleanup = $this->is_ai_cleanup_requested();
+
         try {
-            return $this->process_hfe_file($uploaded_hfe_path, $original_name, $work_dir);
+            return $this->process_hfe_file($uploaded_hfe_path, $original_name, $work_dir, $use_ai_cleanup);
         } finally {
             $this->delete_directory($work_dir);
         }
     }
 
     /**
-     * @return array{success:bool,error?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string}
+     * @return array{success:bool,error?:string,notice?:string,album_name?:string,disk_kb?:int,songs?:array<int,array{filename:string,title:string}>,songlist_text?:string}
      */
-    private function process_hfe_file(string $hfe_path, string $original_name, string $work_dir): array
+    private function process_hfe_file(string $hfe_path, string $original_name, string $work_dir, bool $use_ai_cleanup = false): array
     {
         $gw_binary = $this->gw_binary();
         $seven_z_binary = $this->seven_z_binary();
@@ -362,6 +384,20 @@ final class HFE_To_Songlist_Plugin
         }
 
         $album_name = $this->album_name_from_filename($original_name);
+        $notice = '';
+        if ($use_ai_cleanup) {
+            $cleanup_result = $this->cleanup_titles_with_ai($album_name, $songs);
+            if (!empty($cleanup_result['success']) && is_array($cleanup_result['songs'] ?? null)) {
+                $songs = $cleanup_result['songs'];
+                $notice = __('AI cleanup applied.', 'hfe-to-songlist');
+            } else {
+                $notice = (string) ($cleanup_result['notice'] ?? __('AI cleanup could not be applied; using original parsed titles.', 'hfe-to-songlist'));
+                if (!empty($cleanup_result['debug'])) {
+                    error_log('[HFE Songlist] AI cleanup failed: ' . (string) $cleanup_result['debug']);
+                }
+            }
+        }
+
         $songlist_text = $this->format_songlist_text($album_name, $songs);
 
         return [
@@ -370,6 +406,7 @@ final class HFE_To_Songlist_Plugin
             'disk_kb' => $convert_result['disk_kb'],
             'songs' => $songs,
             'songlist_text' => $songlist_text,
+            'notice' => $notice,
         ];
     }
 
@@ -804,6 +841,251 @@ final class HFE_To_Songlist_Plugin
         $album_name = trim($album_name);
 
         return $album_name !== '' ? $album_name : __('Unknown Album', 'hfe-to-songlist');
+    }
+
+    private function is_ai_cleanup_requested(): bool
+    {
+        $value = isset($_POST['hfe_songlist_ai_cleanup']) ? (string) wp_unslash($_POST['hfe_songlist_ai_cleanup']) : '';
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * @param array<int, array{filename:string,title:string}> $songs
+     * @return array{success:bool,songs?:array<int,array{filename:string,title:string}>,notice?:string,debug?:string}
+     */
+    private function cleanup_titles_with_ai(string $album_name, array $songs): array
+    {
+        $api_key = $this->openai_api_key();
+        if ($api_key === '') {
+            return [
+                'success' => false,
+                'notice' => __('AI cleanup requested, but OpenAI API key is not configured.', 'hfe-to-songlist'),
+            ];
+        }
+
+        $input_payload = [
+            'album_name' => $album_name,
+            'titles' => array_map(
+                static function (array $song): string {
+                    return (string) ($song['title'] ?? '');
+                },
+                $songs
+            ),
+            'source_filenames' => array_map(
+                static function (array $song): string {
+                    return (string) ($song['filename'] ?? '');
+                },
+                $songs
+            ),
+        ];
+
+        $request_body = [
+            'model' => $this->openai_model(),
+            'store' => false,
+            'instructions' => 'Clean up extracted song titles for a disk songlist. Keep each title faithful, readable, and concise. Preserve language and intent, fix spacing/capitalization/minor OCR artifacts, and do not invent new titles. Return titles in the same order and count.',
+            'input' => wp_json_encode($input_payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'text' => [
+                'format' => [
+                    'type' => 'json_schema',
+                    'name' => 'song_title_cleanup',
+                    'strict' => true,
+                    'schema' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'titles' => [
+                                'type' => 'array',
+                                'items' => [
+                                    'type' => 'string',
+                                    'minLength' => 1,
+                                    'maxLength' => 160,
+                                ],
+                            ],
+                        ],
+                        'required' => ['titles'],
+                        'additionalProperties' => false,
+                    ],
+                ],
+            ],
+        ];
+
+        $response = wp_remote_post(
+            $this->openai_api_url(),
+            [
+                'timeout' => 45,
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $api_key,
+                    'Content-Type' => 'application/json',
+                ],
+                'body' => wp_json_encode($request_body),
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return [
+                'success' => false,
+                'notice' => __('AI cleanup failed; using original parsed titles.', 'hfe-to-songlist'),
+                'debug' => 'request_error: ' . $response->get_error_message(),
+            ];
+        }
+
+        $status_code = (int) wp_remote_retrieve_response_code($response);
+        $body = (string) wp_remote_retrieve_body($response);
+        if ($status_code < 200 || $status_code >= 300) {
+            return [
+                'success' => false,
+                'notice' => __('AI cleanup failed; using original parsed titles.', 'hfe-to-songlist'),
+                'debug' => sprintf('http_%d body=%s', $status_code, $this->clip_debug_output($body)),
+            ];
+        }
+
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            return [
+                'success' => false,
+                'notice' => __('AI cleanup failed; using original parsed titles.', 'hfe-to-songlist'),
+                'debug' => 'invalid_json_response: ' . $this->clip_debug_output($body),
+            ];
+        }
+
+        $candidate_titles = $this->extract_ai_titles_from_response($decoded);
+        if ($candidate_titles === null || $candidate_titles === []) {
+            return [
+                'success' => false,
+                'notice' => __('AI cleanup failed; using original parsed titles.', 'hfe-to-songlist'),
+                'debug' => 'no_titles_in_response',
+            ];
+        }
+
+        $cleaned_songs = [];
+        foreach ($songs as $index => $song) {
+            $new_title = isset($candidate_titles[$index]) ? $this->normalize_ai_text((string) $candidate_titles[$index]) : '';
+            if ($new_title === '') {
+                $new_title = (string) $song['title'];
+            }
+
+            $cleaned_songs[] = [
+                'filename' => (string) $song['filename'],
+                'title' => $new_title,
+            ];
+        }
+
+        return [
+            'success' => true,
+            'songs' => $cleaned_songs,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @return array<int, string>|null
+     */
+    private function extract_ai_titles_from_response(array $response): ?array
+    {
+        $titles = $this->parse_ai_titles_payload($response['output_text'] ?? null);
+        if (is_array($titles)) {
+            return $titles;
+        }
+
+        if (isset($response['output']) && is_array($response['output'])) {
+            foreach ($response['output'] as $item) {
+                if (!is_array($item) || !isset($item['content']) || !is_array($item['content'])) {
+                    continue;
+                }
+
+                foreach ($item['content'] as $content) {
+                    if (!is_array($content)) {
+                        continue;
+                    }
+
+                    if (($content['type'] ?? '') === 'output_json') {
+                        $titles = $this->parse_ai_titles_payload($content['json'] ?? null);
+                        if (is_array($titles)) {
+                            return $titles;
+                        }
+                    }
+
+                    if (($content['type'] ?? '') === 'output_text') {
+                        $titles = $this->parse_ai_titles_payload($content['text'] ?? null);
+                        if (is_array($titles)) {
+                            return $titles;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<int, string>|null
+     */
+    private function parse_ai_titles_payload(mixed $payload): ?array
+    {
+        if (is_string($payload)) {
+            $payload = trim($payload);
+            if ($payload === '') {
+                return null;
+            }
+
+            $decoded = json_decode($payload, true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
+            }
+        }
+
+        if (!is_array($payload) || !isset($payload['titles']) || !is_array($payload['titles'])) {
+            return null;
+        }
+
+        $titles = [];
+        foreach ($payload['titles'] as $title) {
+            if (!is_string($title)) {
+                continue;
+            }
+
+            $titles[] = $this->normalize_ai_text($title);
+        }
+
+        return $titles === [] ? null : $titles;
+    }
+
+    private function normalize_ai_text(string $text): string
+    {
+        $text = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $text) ?? '';
+        $text = preg_replace('/\s+/u', ' ', $text) ?? '';
+
+        return trim($text);
+    }
+
+    private function openai_api_key(): string
+    {
+        $api_key = '';
+        if (defined('HFE_SONGLIST_OPENAI_API_KEY')) {
+            $api_key = (string) HFE_SONGLIST_OPENAI_API_KEY;
+        }
+
+        if ($api_key === '') {
+            $api_key = (string) getenv('OPENAI_API_KEY');
+        }
+
+        return (string) apply_filters('hfe_songlist_openai_api_key', trim($api_key));
+    }
+
+    private function openai_model(): string
+    {
+        $model = defined('HFE_SONGLIST_OPENAI_MODEL') ? (string) HFE_SONGLIST_OPENAI_MODEL : 'gpt-5.4-nano';
+
+        return (string) apply_filters('hfe_songlist_openai_model', $model);
+    }
+
+    private function openai_api_url(): string
+    {
+        $url = defined('HFE_SONGLIST_OPENAI_API_URL') ? (string) HFE_SONGLIST_OPENAI_API_URL : 'https://api.openai.com/v1/responses';
+
+        return (string) apply_filters('hfe_songlist_openai_api_url', $url);
     }
 
     private function expected_img_size_for_format(string $format): int
