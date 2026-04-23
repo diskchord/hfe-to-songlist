@@ -117,8 +117,8 @@ final class HFE_To_Songlist_Plugin
                             <?php checked($ai_cleanup_checked); ?>
                         >
                         <span>
-                            <strong><?php esc_html_e('AI Cleanup', 'hfe-to-songlist'); ?></strong>
-                            <?php esc_html_e('Attempt title cleanup using OpenAI (model: gpt-5.4-nano).', 'hfe-to-songlist'); ?>
+                            <strong><?php esc_html_e('AI title cleanup', 'hfe-to-songlist'); ?></strong>
+                            <?php esc_html_e('(optional)', 'hfe-to-songlist'); ?>
                         </span>
                     </label>
 
